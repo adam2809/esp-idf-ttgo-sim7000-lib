@@ -17,8 +17,7 @@
 #include "tcpip_adapter.h"
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp.h"
-#include "lwip/pppapi.h"
-
+#include "netif/ppp/pppapi.h"
 #include "libGSM.h"
 
 
@@ -44,7 +43,6 @@ static uint8_t gsm_status = GSM_STATE_FIRSTINIT;
 static int do_pppos_connect = 1;
 static uint32_t pppos_rx_count;
 static uint32_t pppos_tx_count;
-static uint8_t pppos_task_started = 0;
 static uint8_t gsm_rfOff = 0;
 
 // local variables
@@ -487,7 +485,6 @@ static void enableAllInitCmd()
 static void pppos_client_task()
 {
 	xSemaphoreTake(pppos_mutex, PPPOSMUTEX_TIMEOUT);
-	pppos_task_started = 1;
 	xSemaphoreGive(pppos_mutex);
 
     // Allocate receive buffer
@@ -707,7 +704,6 @@ exit:
 	if (ppp) ppp_free(ppp);
 
 	xSemaphoreTake(pppos_mutex, PPPOSMUTEX_TIMEOUT);
-	pppos_task_started = 0;
 	gsm_status = GSM_STATE_FIRSTINIT;
 	xSemaphoreGive(pppos_mutex);
 	#if GSM_DEBUG
@@ -722,33 +718,25 @@ int ppposInit()
 	if (pppos_mutex != NULL) xSemaphoreTake(pppos_mutex, PPPOSMUTEX_TIMEOUT);
 	do_pppos_connect = 1;
 	int gstat = 0;
-	int task_s = pppos_task_started;
 	if (pppos_mutex != NULL) xSemaphoreGive(pppos_mutex);
 
-	if (task_s == 0) {
-		if (pppos_mutex == NULL) pppos_mutex = xSemaphoreCreateMutex();
-		if (pppos_mutex == NULL) return 0;
+	if (pppos_mutex == NULL) pppos_mutex = xSemaphoreCreateMutex();
+	if (pppos_mutex == NULL) return 0;
 
-		if (tcpip_adapter_initialized == 0) {
-			tcpip_adapter_init();
-			tcpip_adapter_initialized = 1;
-		}
-		xTaskCreate(&pppos_client_task, "pppos_client_task", PPPOS_CLIENT_STACK_SIZE, NULL, 10, NULL);
-		while (task_s == 0) {
-			vTaskDelay(10 / portTICK_RATE_MS);
-			xSemaphoreTake(pppos_mutex, PPPOSMUTEX_TIMEOUT);
-			task_s = pppos_task_started;
-			xSemaphoreGive(pppos_mutex);
-		}
+	if (tcpip_adapter_initialized == 0) {
+		tcpip_adapter_init();
+		tcpip_adapter_initialized = 1;
 	}
+	xTaskCreate(&pppos_client_task, "pppos_client_task", PPPOS_CLIENT_STACK_SIZE, NULL, 10, NULL);
+	vTaskDelay(10 / portTICK_RATE_MS);
+	xSemaphoreTake(pppos_mutex, PPPOSMUTEX_TIMEOUT);
+	xSemaphoreGive(pppos_mutex);
 
 	while (gstat != 1) {
 		vTaskDelay(10 / portTICK_RATE_MS);
 		xSemaphoreTake(pppos_mutex, PPPOSMUTEX_TIMEOUT);
 		gstat = gsm_status;
-		task_s = pppos_task_started;
 		xSemaphoreGive(pppos_mutex);
-		if (task_s == 0) return 0;
 	}
 
 	return 1;
@@ -898,7 +886,7 @@ int smsSend(char *smsnum, char *msg)
 	if (msgbuf == NULL) return 0;
 
 	sprintf(msgbuf, "%s\x1A", msg);
-	res = atCmd_waitResponse(msgbuf, "+CMGS: ", "ERROR", len+1, 40000, NULL, 0);
+	res = atCmd_waitResponse(msgbuf, "> ", "ERROR", len+1, 40000, NULL, 0);
 	if (res != 1) {
 		res = atCmd_waitResponse("\x1B", GSM_OK_Str, NULL, 1, 1000, NULL, 0);
 		res = 0;
@@ -1105,5 +1093,30 @@ int smsDelete(int idx)
 	sprintf(buf,"AT+CMGD=%d\r\n", idx);
 
 	return atCmd_waitResponse(buf, GSM_OK_Str, NULL, -1, 5000, NULL, 0);
+}
+
+
+void sms_task(void *pvParameters){
+	uint32_t sms_time = 0;
+	char buf[160];
+
+	ESP_LOGI(TAG, "Sending sms");
+
+	// ** For SMS operations we have to off line **
+	ppposDisconnect(0, 0);
+	gsm_RFOn();  // Turn on RF if it was turned off
+	vTaskDelay(2000 / portTICK_RATE_MS);
+
+	if (clock() > sms_time) {
+		if (smsSend(CONFIG_GSM_SMS_NUMBER, "Hi from ESP32 via GSM\rThis is the test message.") == 1) {
+			printf("SMS sent successfully\r\n");
+		}
+		else {
+			printf("SMS send failed\r\n");
+		}
+		sms_time = clock() + CONFIG_GSM_SMS_INTERVAL; // next sms send time
+	}
+	gsm_RFOff();
+	vTaskDelete(NULL);
 }
 
