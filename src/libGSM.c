@@ -1108,7 +1108,7 @@ void sms_task(void *pvParameters){
 	vTaskDelay(2000 / portTICK_RATE_MS);
 
 	if (clock() > sms_time) {
-		if (smsSend(CONFIG_GSM_SMS_NUMBER, "Hi from ESP32 via GSM\rThis is the test message.") == 1) {
+		if (smsSend(CONFIG_GSM_SMS_NUMBER, "Hi from ESP32 via GSM\rThis is alarm message.") == 1) {
 			printf("SMS sent successfully\r\n");
 		}
 		else {
